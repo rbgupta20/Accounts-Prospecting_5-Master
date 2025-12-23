@@ -28,7 +28,8 @@ print("✅ Libraries imported\n")
 # ==========================================
 print("📝 Please provide required inputs\n")
 
-industries_input = input("🏭 Enter industry ").strip()
+industries_input = input("🏭 Enter industry for which Leads Required. \n Ex:Cable Tray manufacturers,\nPre Engineered manufacturers,\nSolar Mounting structure manufacturers").strip()
+
 cities_input = input("📍 Enter city: ").strip()
 
 SERPER_API_KEY = getpass.getpass("🔑 Enter your Serper API Key: ").strip()
@@ -68,7 +69,7 @@ def get_serper_results(query, total_results=10):
         time.sleep(1.5)
     return all_results[:total_results]
 
-print("🌐 Step 1: Searching Google for company websites...\n")
+print("🌐 Step 1: Researching online for company websites...\n")
 
 all_data = []
 seen_links = set()
@@ -124,7 +125,7 @@ print(f"✅ Step 2 Complete: {len(df_websites)} parent links after deduplication
 # ==========================================
 # 4️⃣ EXTRACT RAW HTML TEXT
 # ==========================================
-print("📄 Step 3: Extracting raw text from company websites...")
+print("📄 Step 3: Extracting raw text from Link...")
 
 ua = UserAgent()
 
@@ -232,7 +233,7 @@ print("✅ Step 5 Complete: Company profiles extracted\n")
 # ==========================================
 # 7️⃣ CLASSIFY RELEVANCY VIA DEEPSEEK
 # ==========================================
-print("🧠 Step 6: Classifying companies for relevancy...")
+print("🧠 Step 6: Classifying companies for relevancy with AI...")
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
@@ -246,7 +247,7 @@ def classify_company(name, profile, industry):
     except:
         return "ERROR"
 
-df_websites["Header"] = df_websites.apply(
+df_websites["Relevancy"] = df_websites.apply(
     lambda r: classify_company(r["Company_Name"], r["Company_Profile"], r["industry"]),
     axis=1
 )
@@ -256,7 +257,7 @@ print("✅ Step 6 Complete: Relevancy classification done\n")
 # ==========================================
 # 8️⃣ EXTRACT CONTACT DETAILS
 # ==========================================
-print("📞 Step 7: Extracting phone numbers and email IDs...")
+print("📞 Step 7: Collating phone numbers and email IDs...")
 
 def find_contact_pages(base_url):
     try:
