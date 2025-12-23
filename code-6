@@ -1,0 +1,122 @@
+# ==========================================
+# STEP 1: Install dependencies
+# ==========================================
+!pip install requests beautifulsoup4 pandas lxml tqdm
+
+# ==========================================
+# STEP 2: Import libraries
+# ==========================================
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from urllib.parse import urljoin, urlparse, urlunparse
+import re
+from tqdm import tqdm
+from google.colab import files
+from requests.exceptions import RequestException
+
+# ==========================================
+# STEP 3: Global headers
+# ==========================================
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/120.0 Safari/537.36'
+}
+
+# ==========================================
+# STEP 4: Extract visible text (UNCHANGED LOGIC)
+# ==========================================
+def extract_visible_text(html):
+    soup = BeautifulSoup(html, 'lxml')
+    for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'form', 'svg', 'nav']):
+        tag.decompose()
+    text = ' '.join(soup.stripped_strings)
+    return re.sub(r'\s+', ' ', text)
+
+# ==========================================
+# STEP 5: Normalize URLs (UNCHANGED LOGIC)
+# ==========================================
+def normalize_url(url):
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+
+# ==========================================
+# STEP 6: Find About / Profile pages (UNCHANGED LOGIC)
+# ==========================================
+def find_about_page(base_url):
+    try:
+        res = requests.get(base_url, headers=HEADERS, timeout=10)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'lxml')
+        links = soup.find_all('a', href=True)
+
+        candidates = []
+        for link in links:
+            href = link['href'].lower()
+            if any(kw in href for kw in ['about', 'profile', 'who-we-are', 'overview', 'company']):
+                full_link = urljoin(base_url, href)
+                candidates.append(normalize_url(full_link))
+
+        return list(set(candidates))
+    except RequestException:
+        return []
+
+# ==========================================
+# STEP 7: Extract About text (UNCHANGED LOGIC)
+# ==========================================
+def extract_about_text(url):
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        res.raise_for_status()
+        text = extract_visible_text(res.text)
+        paragraphs = [p for p in text.split('.') if len(p.split()) > 5]
+        return '. '.join(paragraphs[:20]).strip()
+    except RequestException:
+        return ''
+
+# ==========================================
+# STEP 8: MAIN FUNCTION (CSV IN → CSV OUT)
+# ==========================================
+def extract_about_from_csv():
+    print("📤 Upload CSV file with column: URL")
+    uploaded = files.upload()
+    csv_file = list(uploaded.keys())[0]
+    df = pd.read_csv(csv_file)
+
+    output = []
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="🔍 Extracting About Us"):
+        base_url = str(row['URL']).strip()
+        if not base_url:
+            continue
+
+        if not base_url.startswith(('http://', 'https://')):
+            base_url = 'https://' + base_url
+
+        about_text = ''
+        about_pages = find_about_page(base_url)
+
+        if about_pages:
+            for page in about_pages:
+                about_text = extract_about_text(page)
+                if len(about_text) > 100:
+                    break
+        else:
+            about_text = extract_about_text(base_url)
+
+        output.append({
+            'URL': base_url,
+            'About Us / Company Profile': about_text
+        })
+
+    out_df = pd.DataFrame(output)
+    out_df.to_csv('About_Us_Output.csv', index=False)
+
+    print("✅ Done. File saved as About_Us_Output.csv")
+    files.download('About_Us_Output.csv')
+
+# ==========================================
+# STEP 9: Run
+# ==========================================
+extract_about_from_csv()
