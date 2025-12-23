@@ -1,0 +1,134 @@
+# =============================================
+# 📦 STEP 1: Install dependencies
+# =============================================
+!pip install pandas beautifulsoup4 requests lxml fake-useragent
+
+# =============================================
+# 📚 STEP 2: Import libraries
+# =============================================
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from google.colab import files
+from fake_useragent import UserAgent
+import time
+import urllib3
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# =============================================
+# 🌐 STEP 3: Smart Request Handler
+# =============================================
+ua = UserAgent()
+
+def smart_get(url, retries=3):
+    if not isinstance(url, str) or not url.strip():
+        return "Error: Invalid or empty URL"
+
+    url = url.strip()
+
+    # Add https if missing
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    for attempt in range(retries):
+        try:
+            headers = {
+                "User-Agent": ua.random,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+
+            response = requests.get(
+                url,
+                timeout=12,
+                headers=headers,
+                allow_redirects=True,
+                verify=False
+            )
+
+            if response.status_code == 200:
+                return response.text
+
+            if response.status_code in [403, 406, 429, 500, 502]:
+                time.sleep(2 + attempt)
+                continue
+
+            return f"Error: HTTP {response.status_code}"
+
+        except Exception as e:
+            if attempt == retries - 1:
+                return f"Error: {e}"
+            time.sleep(1)
+
+    return "Error: Max retries failed"
+
+
+# =============================================
+# 🧹 STEP 4: Extract Clean Text from HTML
+# =============================================
+def extract_text(url):
+    html = smart_get(url)
+
+    if html is None or str(html).startswith("Error"):
+        return html
+
+    try:
+        soup = BeautifulSoup(html, "lxml")
+
+        # Remove unwanted tags
+        for tag in soup(["script", "style", "noscript", "iframe"]):
+            tag.decompose()
+
+        text = soup.get_text(" ", strip=True)
+        return text
+
+    except Exception as e:
+        return f"Error parsing HTML: {e}"
+
+
+# =============================================
+# 📁 STEP 5: Upload CSV (parent_link required)
+# =============================================
+print("📁 Upload CSV with column name: parent_link")
+uploaded = files.upload()
+
+file_name = next(iter(uploaded))
+df = pd.read_csv(file_name)
+
+# Validate required column
+if "parent_link" not in df.columns:
+    raise ValueError("❌ Required column 'parent_link' not found in CSV")
+
+# Clean input
+df = df.dropna(subset=["parent_link"])
+df["parent_link"] = df["parent_link"].astype(str)
+
+# =============================================
+# 🔄 STEP 6: Process all parent_link URLs
+# =============================================
+results = []
+
+for url in df["parent_link"]:
+    print("➡ Extracting:", url)
+
+    try:
+        text = extract_text(url)
+    except Exception as e:
+        text = f"Error: {e}"
+
+    results.append({
+        "parent_link": url,
+        "Extracted Raw Text": text
+    })
+
+# =============================================
+# 💾 STEP 7: Save Output
+# =============================================
+output_df = pd.DataFrame(results)
+output_path = "output_text_extracted.csv"
+output_df.to_csv(output_path, index=False)
+
+print("✅ Extraction completed successfully!")
+files.download(output_path)
