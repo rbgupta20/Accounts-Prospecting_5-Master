@@ -1,0 +1,117 @@
+# ==========================================
+# STEP 1: Install dependencies
+# ==========================================
+!pip install requests pandas tqdm
+
+# ==========================================
+# STEP 2: Import libraries
+# ==========================================
+import requests
+import pandas as pd
+import time
+from tqdm import tqdm
+import getpass
+
+# ==========================================
+# STEP 3: Ask for Serper API key securely
+# ==========================================
+SERPER_API_KEY = getpass.getpass("🔑 Enter your Serper API Key: ").strip()
+
+if not SERPER_API_KEY:
+    raise ValueError("❌ Serper API key cannot be empty")
+
+# ==========================================
+# STEP 4: USER INPUT – Industry & Cities
+# ==========================================
+industries_input = input("🏭 Enter industries (comma separated): ").strip()
+cities_input = input("📍 Enter cities / regions (comma separated): ").strip()
+
+industries = [i.strip() for i in industries_input.split(",") if i.strip()]
+cities = [c.strip() for c in cities_input.split(",") if c.strip()]
+
+if not industries or not cities:
+    raise ValueError("❌ Industries and Cities cannot be empty")
+
+print(f"\n🔍 Industries: {industries}")
+print(f"📍 Cities: {cities}\n")
+
+# ==========================================
+# STEP 5: Serper search function (PAGINATED)
+# ==========================================
+def get_serper_results(query, total_results=30):
+    """
+    Fetch up to `total_results` organic Google results
+    using Serper pagination (10 results per page).
+    """
+    all_results = []
+    url = "https://google.serper.dev/search"
+    headers = {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    pages = (total_results + 9) // 10  # ceil division
+
+    for page in range(1, pages + 1):
+        payload = {
+            "q": query,
+            "num": 10,
+            "page": page
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            data = response.json()
+
+            if "organic" in data:
+                all_results.extend(data["organic"])
+
+        except Exception as e:
+            print(f"❌ Error for query '{query}' (page {page}): {e}")
+
+        time.sleep(1.5)  # prevent rate limit
+
+    return all_results[:total_results]
+
+# ==========================================
+# STEP 6: Collect & Deduplicate Results
+# ==========================================
+all_data = []
+seen_links = set()
+
+for city in tqdm(cities, desc="Processing cities"):
+    for industry in industries:
+        query = f"{industry} companies in {city} -indiamart -justdial"
+        results = get_serper_results(query, total_results=30)
+
+        for idx, res in enumerate(results, start=1):
+            link = res.get("link", "").strip()
+
+            if not link or link in seen_links:
+                continue
+
+            seen_links.add(link)
+
+            all_data.append({
+                "industry": industry,
+                "city": city,
+                "search_query": query,
+                "google_position": idx,
+                "title": res.get("title", ""),
+                "website": link,
+                "snippet": res.get("snippet", ""),
+                "displayed_link": res.get("displayed_link", link)
+            })
+
+# ==========================================
+# STEP 7: Save CSV
+# ==========================================
+df = pd.DataFrame(all_data)
+
+output_file = "lead_generation_results.csv"
+df.to_csv(output_file, index=False)
+
+print(f"\n✅ CSV saved as '{output_file}'")
+print(f"📊 Total unique websites collected: {len(df)}")
+
+df.head()
