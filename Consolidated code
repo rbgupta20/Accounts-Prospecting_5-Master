@@ -89,7 +89,6 @@ for city in tqdm(cities, desc="Processing cities"):
                 "industry": industry,
                 "city": city,
                 "search_query": query,
-                "google_position": idx,
                 "title": res.get("title", ""),
                 "website": link,
                 "snippet": res.get("snippet", ""),
