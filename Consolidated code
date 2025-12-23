@@ -1,0 +1,300 @@
+# ==========================================
+# 📦 INSTALL DEPENDENCIES
+# ==========================================
+!pip install requests pandas tqdm beautifulsoup4 lxml fake-useragent python-dotenv tldextract --quiet
+
+# ==========================================
+# 🔥 IMPORT LIBRARIES
+# ==========================================
+import requests
+import pandas as pd
+import time
+from tqdm import tqdm
+from urllib.parse import urlparse, urljoin, urlunparse
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+import re
+import tldextract
+import getpass
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ==========================================
+# 🛠 USER INPUTS
+# ==========================================
+SERPER_API_KEY = getpass.getpass("🔑 Enter your Serper API Key: ").strip()
+DEEPSEEK_API_KEY = getpass.getpass("🔑 Enter your DeepSeek API Key: ").strip()
+
+industries_input = input("🏭 Enter industries (comma separated): ").strip()
+cities_input = input("📍 Enter cities / regions (comma separated): ").strip()
+
+industries = [i.strip() for i in industries_input.split(",") if i.strip()]
+cities = [c.strip() for c in cities_input.split(",") if c.strip()]
+
+if not industries or not cities or not SERPER_API_KEY or not DEEPSEEK_API_KEY:
+    raise ValueError("❌ All inputs are required")
+
+print(f"\n🔍 Industries: {industries}")
+print(f"📍 Cities: {cities}\n")
+
+# ==========================================
+# 1️⃣ SERPER GOOGLE SEARCH
+# ==========================================
+def get_serper_results(query, total_results=30):
+    all_results = []
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    pages = (total_results + 9) // 10
+
+    for page in range(1, pages + 1):
+        payload = {"q": query, "num": 10, "page": page}
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            data = response.json()
+            if "organic" in data:
+                all_results.extend(data["organic"])
+        except Exception as e:
+            print(f"❌ Error for query '{query}' (page {page}): {e}")
+        time.sleep(1.5)
+    return all_results[:total_results]
+
+all_data = []
+seen_links = set()
+for city in tqdm(cities, desc="Processing cities"):
+    for industry in industries:
+        query = f"{industry} companies in {city} -indiamart -justdial"
+        results = get_serper_results(query)
+        for idx, res in enumerate(results, start=1):
+            link = res.get("link", "").strip()
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+            all_data.append({
+                "industry": industry,
+                "city": city,
+                "search_query": query,
+                "google_position": idx,
+                "title": res.get("title", ""),
+                "website": link,
+                "snippet": res.get("snippet", ""),
+                "displayed_link": res.get("displayed_link", link)
+            })
+
+df_websites = pd.DataFrame(all_data)
+df_websites.to_csv("lead_generation_results.csv", index=False)
+print(f"\n✅ Step 1 Complete: {len(df_websites)} unique websites collected")
+
+# ==========================================
+# 2️⃣ EXTRACT PARENT LINKS
+# ==========================================
+def get_parent_link(website):
+    try:
+        parsed = urlparse(website)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    except:
+        return ""
+
+df_websites['parent_link'] = df_websites['website'].apply(get_parent_link)
+
+# ==========================================
+# 3️⃣ REMOVE DUPLICATES
+# ==========================================
+df_websites = df_websites.drop_duplicates(subset=['parent_link']).reset_index(drop=True)
+print(f"✅ Step 2 Complete: {len(df_websites)} parent links after deduplication")
+
+# ==========================================
+# 4️⃣ EXTRACT RAW HTML TEXT
+# ==========================================
+ua = UserAgent()
+
+def smart_get(url, retries=3):
+    if not isinstance(url, str) or not url.strip():
+        return "Error: Invalid or empty URL"
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    for attempt in range(retries):
+        try:
+            headers = {
+                "User-Agent": ua.random,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            response = requests.get(url, timeout=12, headers=headers, allow_redirects=True, verify=False)
+            if response.status_code == 200:
+                return response.text
+            if response.status_code in [403, 406, 429, 500, 502]:
+                time.sleep(2 + attempt)
+                continue
+            return f"Error: HTTP {response.status_code}"
+        except Exception as e:
+            if attempt == retries - 1:
+                return f"Error: {e}"
+            time.sleep(1)
+    return "Error: Max retries failed"
+
+def extract_text(url):
+    html = smart_get(url)
+    if html is None or str(html).startswith("Error"):
+        return html
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript", "iframe"]):
+            tag.decompose()
+        return soup.get_text(" ", strip=True)
+    except:
+        return "Error parsing HTML"
+
+df_websites["Extracted_Raw_Text"] = df_websites['parent_link'].apply(extract_text)
+print("✅ Step 3 Complete: Raw HTML text extracted")
+
+# ==========================================
+# 5️⃣ EXTRACT COMPANY NAME VIA DEEPSEEK
+# ==========================================
+def extract_company_name(url, html_text):
+    endpoint = "https://api.deepseek.com/v1/chat/completions"
+    prompt = f"Extract ONLY the company name from the following website content.\nWebsite URL: {url}\nHTML Page Text:\n{html_text}\nReturn ONLY the company name. No explanations."
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0}
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"].strip()
+    except:
+        return "ERROR"
+
+df_websites["Company_Name"] = df_websites.apply(lambda row: extract_company_name(row["parent_link"], row["Extracted_Raw_Text"]), axis=1)
+print("✅ Step 4 Complete: Company names extracted")
+
+# ==========================================
+# 6️⃣ EXTRACT COMPANY PROFILE (ABOUT US)
+# ==========================================
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36'}
+
+def extract_visible_text_clean(html):
+    soup = BeautifulSoup(html, 'lxml')
+    for tag in soup(['script','style','noscript','header','footer','form','svg','nav']):
+        tag.decompose()
+    text = ' '.join(soup.stripped_strings)
+    return re.sub(r'\s+', ' ', text)
+
+def normalize_url(url):
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+
+def find_about_page(base_url):
+    try:
+        res = requests.get(base_url, headers=HEADERS, timeout=10)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'lxml')
+        links = soup.find_all('a', href=True)
+        candidates = [urljoin(base_url, l['href']) for l in links if any(kw in l['href'].lower() for kw in ['about','profile','who-we-are','overview','company'])]
+        return list(set(candidates))
+    except:
+        return []
+
+def extract_about_text(url):
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        res.raise_for_status()
+        text = extract_visible_text_clean(res.text)
+        paragraphs = [p for p in text.split('.') if len(p.split())>5]
+        return '. '.join(paragraphs[:20]).strip()
+    except:
+        return ''
+
+def extract_company_profile(url):
+    about_pages = find_about_page(url)
+    if about_pages:
+        for page in about_pages:
+            text = extract_about_text(page)
+            if len(text) > 100:
+                return text
+    return extract_about_text(url)
+
+df_websites["Company_Profile"] = df_websites['parent_link'].apply(extract_company_profile)
+print("✅ Step 5 Complete: Company profile extracted")
+
+# ==========================================
+# 7️⃣ CLASSIFY RELEVANCY VIA DEEPSEEK
+# ==========================================
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+
+def classify_company(name, profile):
+    prompt = f"You are a B2B industry classification expert.\nCompany Name: {name}\nCompany Profile: {profile}\nQuestion: Is this company primarily involved in infrastructure or construction activities that require STEEL? Answer YES / NO / UNCLEAR only."
+    payload = {"model": "deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0}
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type":"application/json"}
+    try:
+        r = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        ans = r.json()["choices"][0]["message"]["content"].strip().upper()
+        return ans if ans in ["YES","NO","UNCLEAR"] else "UNCLEAR"
+    except:
+        return "ERROR"
+
+df_websites["Infra_Construction_Requiring_Steel"] = df_websites.apply(lambda row: classify_company(row["Company_Name"], row["Company_Profile"]), axis=1)
+print("✅ Step 6 Complete: Companies classified")
+
+# ==========================================
+# 8️⃣ EXTRACT CONTACTS
+# ==========================================
+def find_contact_pages(base_url):
+    try:
+        res = requests.get(base_url, headers=HEADERS, timeout=10)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'lxml')
+        links = soup.find_all('a', href=True)
+        return list({urljoin(base_url,l['href']) for l in links if any(kw in l['href'].lower() for kw in ['contact','about','reach','support','help'])})
+    except:
+        return []
+
+def extract_contacts_from_page(url):
+    phones, emails = set(), set()
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+        text = extract_visible_text_clean(res.text)
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if 'mailto:' in href:
+                mail = href.split('mailto:')[-1].split('?')[0].strip()
+                if re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', mail):
+                    emails.add(mail)
+            if 'tel:' in href:
+                phone = re.sub(r'\D', '', href.split('tel:')[-1])
+                if len(phone)==10 and phone[0] in '6789':
+                    phones.add(phone)
+        for num in re.findall(r'(?:\+91[\s\-]*)?(?:0)?([6-9][\d\-\s\.]{8,15}\d)', text):
+            digits = re.sub(r'\D','',num)
+            if len(digits)==10 and digits[0] in '6789':
+                phones.add(digits)
+        emails.update(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text))
+    except:
+        pass
+    return list(phones), list(emails)
+
+all_contacts = []
+for _, row in tqdm(df_websites.iterrows(), total=len(df_websites), desc="Extracting contacts"):
+    base_url = str(row['parent_link']).strip()
+    if not base_url: continue
+    company_name = tldextract.extract(base_url).domain.capitalize()
+    all_phones, all_emails = set(), set()
+    p, e = extract_contacts_from_page(base_url)
+    all_phones.update(p); all_emails.update(e)
+    for page in find_contact_pages(base_url):
+        p, e = extract_contacts_from_page(page)
+        all_phones.update(p); all_emails.update(e)
+    all_contacts.append({
+        'Company Name': company_name,
+        'Website': base_url,
+        'Phone Numbers': ', '.join(sorted(all_phones)),
+        'Email Addresses': ', '.join(sorted(all_emails))
+    })
+
+df_contacts = pd.DataFrame(all_contacts)
+df_final = pd.merge(df_websites, df_contacts, left_on='parent_link', right_on='Website', how='left')
+df_final.to_csv("B2B_Lead_Full_Output.csv", index=False)
+print("\n✅ Pipeline Complete! Output saved as B2B_Lead_Full_Output.csv")
