@@ -63,7 +63,12 @@ Code-5:
 Extracts Company name from Extracted Raw Text
 
 
+Code-6:
+Extracts Company Profile from parent_link
+
+Code-7:
+Calls Deepseek API to check for Relevancy basis Industry input given by user initially & Company name & Company Profile
 
 
-5. Check for Relevancy
-6. Extarct contacts from Parent link for relevant companies
+Code-8
+Extarct contacts from parent_link
