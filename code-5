@@ -1,0 +1,92 @@
+
+# -------------------------------
+# STEP 1: Install dependencies
+# -------------------------------
+!pip install pandas requests python-dotenv
+
+import pandas as pd
+import requests
+from google.colab import files
+
+# -------------------------------
+# STEP 2: Upload CSV File
+# -------------------------------
+print("📌 Please upload the CSV file containing 'URL' and 'HTML Text' columns.")
+uploaded = files.upload()
+
+csv_filename = list(uploaded.keys())[0]
+df = pd.read_csv(csv_filename)
+
+print("\n✅ CSV Loaded Successfully!")
+print(df.head())
+
+
+# -------------------------------
+# STEP 3: Ask for DeepSeek API Key
+# -------------------------------
+import getpass
+DEEPSEEK_API_KEY = getpass.getpass("🔑 Enter your DeepSeek API key: ")
+
+
+# -------------------------------
+# STEP 4: Function to call DeepSeek API
+# -------------------------------
+def extract_company_name(url, html_text):
+    endpoint = "https://api.deepseek.com/v1/chat/completions"
+
+    prompt = f"""
+Extract ONLY the company name from the following website content.
+
+Website URL: {url}
+
+HTML Page Text:
+{html_text}
+
+Return ONLY the company name. No explanations.
+"""
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+    }
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+        return result["choices"][0]["message"]["content"].strip()
+
+    except Exception as e:
+        print("❌ Error:", e)
+        return "ERROR"
+
+
+# -------------------------------
+# STEP 5: Process each row
+# -------------------------------
+print("\n🔍 Extracting company names...")
+
+df["Extracted_Company_Name"] = df.apply(
+    lambda row: extract_company_name(row["URL"], row["HTML Text"]),
+    axis=1
+)
+
+print("\n✅ Extraction Complete!")
+print(df.head())
+
+
+# -------------------------------
+# STEP 6: Save Output CSV & Download
+# -------------------------------
+output_file = "company_names_output.csv"
+df.to_csv(output_file, index=False)
+
+print(f"\n📥 Download your processed CSV: {output_file}")
+files.download(output_file)
