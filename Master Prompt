@@ -27,19 +27,43 @@ CSV File: lead_generation_results.csv
 Each row contains:
 
 Column Name	Meaning
-industry	Industry searched
-city	City / region
-search_query	Full Google query
-google_position	Rank in Google results
-title	Page title
-website	Company website URL
-snippet	Google description
-displayed_link	Displayed URL
+industry:	Industry searched
+city:	City / region
+search_query:	Full Google query
+google_position:	Rank in Google results
+title:	Page title
+website:	Company website URL
+snippet:	Google description
+displayed_link:	Displayed URL
 
 
-2. Clean child link to get parent link
-3. Remove duplicates from Parent links
-3. Extract HTML text from the Parent Link
-4. Extract Company name from HTML Text
+Code-2:
+Extract the Parent Link from the given Link
+
+Input:
+website
+
+Output:
+A new column called parent_link is created.
+
+
+Code-3:
+Remove duplicates from Parent links
+(there's no python code here. Add the code as required)
+
+Code-4:
+Extract HTML text from the parent_link
+This code extracts the HTML text from the parent_link got from previous step/code
+
+Input: parent_link
+Output: parent_link  & Extracted Raw Text
+
+
+Code-5:
+Extracts Company name from Extracted Raw Text
+
+
+
+
 5. Check for Relevancy
 6. Extarct contacts from Parent link for relevant companies
