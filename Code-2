@@ -1,0 +1,30 @@
+# Step 1: Install necessary packages
+!pip install pandas --quiet
+
+from urllib.parse import urlparse
+import pandas as pd
+from google.colab import files
+
+# Step 2: Upload your CSV
+uploaded = files.upload()  # Upload CSV file
+
+# Step 3: Read uploaded CSV
+for filename in uploaded.keys():
+    df = pd.read_csv(filename)
+
+# Step 4: Extract parent link from 'website' column
+def get_parent_link(website):
+    try:
+        parsed = urlparse(website)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    except:
+        return ""
+
+df['parent_link'] = df['website'].apply(get_parent_link)
+
+# Step 5: Save new CSV
+output_file = "parent_links_output.csv"
+df.to_csv(output_file, index=False)
+
+# Step 6: Download CSV
+files.download(output_file)
