@@ -52,7 +52,7 @@ print("⏳ This may take some time depending on number of websites\n")
 # ==========================================
 # 1️⃣ SERPER GOOGLE SEARCH
 # ==========================================
-def get_serper_results(query, total_results=10):
+def get_serper_results(query, total_results=50):
     all_results = []
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
@@ -238,7 +238,7 @@ print("🧠 Step 6: Classifying companies for relevancy with AI...")
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
 def classify_company(name, profile, industry):
-    prompt = f"You are a B2B industry classification expert.\nCompany Name: {name}\nCompany Profile: {profile}\nQuestion: Is this company primarily involved in {industry} activities that require STEEL? Answer YES / NO / UNCLEAR only."
+    prompt = f"You are a B2B industry classification expert.\nCompany Name: {name}\nCompany Profile: {profile}\nQuestion: Is this company primarily involved in hiring consultancy? Answer YES / NO / UNCLEAR only."
     payload = {"model": "deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0}
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}","Content-Type":"application/json"}
     try:
