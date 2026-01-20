@@ -239,6 +239,10 @@ df_jamku = pd.DataFrame(jamku_rows)
 # ======================================================
 # STEP 4: DEEPSEEK SEMANTIC NAME MATCHING (UPDATED + FIXED)
 # ======================================================
+# ======================================================
+# STEP 4: DEEPSEEK SEMANTIC NAME MATCHING (UPDATED → ONLY compare Company Name vs Trade Name)
+# ======================================================
+
 def clean_deepseek_json(raw_text):
     """Fix DeepSeek JSON by removing code fences, escapes, extra quotes."""
     if not raw_text:
@@ -246,34 +250,32 @@ def clean_deepseek_json(raw_text):
 
     txt = raw_text.strip()
 
-    # Remove ```json ... ```
     if txt.startswith("```"):
         txt = txt.replace("```json", "").replace("```", "").strip()
 
-    # Remove wrapped quotes
     if txt.startswith('"') and txt.endswith('"'):
         txt = txt[1:-1]
 
-    # Unescape quotes
     txt = txt.replace('\\"', '"')
-
     return txt.strip()
 
 
-def check_name_match(company_name, trade_name, legal_name):
+def check_name_match(company_name, trade_name):
     prompt = f"""
     Compare the following names and determine if they refer to the same company.
 
     Input Company Name: {company_name}
     Jamku Trade Name: {trade_name}
-    Jamku Legal Name: {legal_name}
 
-    Rules:
-    - Ignore Pvt, Private, Limited, Ltd
-    - Ignore formatting differences
-    - If Trade Name OR Legal Name matches semantically → "Matched"
-    
-    Respond ONLY in JSON:
+    Very strict matching rules:
+    - ONLY compare Company Name vs Trade Name (ignore legal name completely)
+    - Ignore Pvt, Private, Limited, Ltd, LLP, Inc, Co., Enterprises, Industries
+    - Ignore punctuation, spacing, & formatting differences
+    - Compare based on semantic closeness and core business identifiers (e.g., JINDAL, JSW, TATA)
+    - If the IMPORTANT words match → "Matched"
+    - If they describe different businesses → "Not Matched"
+
+    Respond ONLY in clean JSON:
     {{
       "match": "Matched" or "Not Matched",
       "reason": "short explanation"
@@ -288,7 +290,7 @@ def check_name_match(company_name, trade_name, legal_name):
     payload = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a company identity verifier."},
+            {"role": "system", "content": "You are an expert company identity verifier."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.2
@@ -298,12 +300,12 @@ def check_name_match(company_name, trade_name, legal_name):
         resp = requests.post(url, headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"]
-
         cleaned = clean_deepseek_json(raw)
 
         try:
             parsed = json.loads(cleaned)
             return parsed.get("match", ""), parsed.get("reason", ""), raw
+
         except:
             return "Error", "Invalid JSON (after cleaning)", raw
 
@@ -316,10 +318,9 @@ results = []
 
 for _, row in tqdm(df_jamku.iterrows(), total=len(df_jamku)):
     company = row["Company Name"]
-    trade    = row["Trade Name"]
-    legal    = row["Legal Name"]
+    trade   = row["Trade Name"]
 
-    match, reason, raw_json = check_name_match(company, trade, legal)
+    match, reason, raw_json = check_name_match(company, trade)
 
     row["Name Match?"] = match
     row["Name Match Reason"] = reason
