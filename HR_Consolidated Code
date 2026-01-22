@@ -1,4 +1,3 @@
-
 # ==========================================
 # 📦 INSTALL DEPENDENCIES
 # ==========================================
@@ -35,8 +34,6 @@ cities_input = input("📍 Enter city: ").strip()
 
 SERPER_API_KEY = getpass.getpass("🔑 Enter your Serper API Key: ").strip()
 DEEPSEEK_API_KEY = getpass.getpass("🔑 Enter your LLM API Key: ").strip()
-
-
 
 industries = [i.strip() for i in industries_input.split(",") if i.strip()]
 cities = [c.strip() for c in cities_input.split(",") if c.strip()]
@@ -231,69 +228,94 @@ df_websites["Company_Profile"] = df_websites['parent_link'].apply(extract_compan
 print("✅ Step 5 Complete: Company profiles extracted\n")
 
 # ==========================================
-# 7️⃣ CLASSIFY RELEVANCY VIA DEEPSEEK
+# 7️⃣ ADVANCED CONTACT EXTRACTION (UPGRADED)
 # ==========================================
-print("🧠 Step 6: Classifying companies for relevancy with AI...")
+print("📞 Step 6: Extracting highly accurate phone numbers & emails...")
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+def extract_visible_text(html):
+    soup = BeautifulSoup(html, 'lxml')
+    for tag in soup(['script','style','noscript','header','footer','form','svg','nav']):
+        tag.decompose()
+    return ' '.join(soup.stripped_strings)
 
-def classify_company(name, profile, industry):
-    prompt = f"You are a B2B industry classification expert.\nCompany Name: {name}\nCompany Profile: {profile}\nQuestion: Is this company primarily involved in hiring consultancy? Answer YES / NO / UNCLEAR only."
-    payload = {"model": "deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0}
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}","Content-Type":"application/json"}
-    try:
-        r = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
-        return r.json()["choices"][0]["message"]["content"].strip().upper()
-    except:
-        return "ERROR"
-
-df_websites["Relevancy"] = df_websites.apply(
-    lambda r: classify_company(r["Company_Name"], r["Company_Profile"], r["industry"]),
-    axis=1
-)
-
-print("✅ Step 6 Complete: Relevancy classification done\n")
-
-# ==========================================
-# 8️⃣ EXTRACT CONTACT DETAILS
-# ==========================================
-print("📞 Step 7: Collating phone numbers and email IDs...")
+def normalize_url(url):
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
 
 def find_contact_pages(base_url):
     try:
-        r = requests.get(base_url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, 'lxml')
-        return [urljoin(base_url,l['href']) for l in soup.find_all('a', href=True)
-                if any(k in l['href'].lower() for k in ['contact','support','reach'])]
+        res = requests.get(base_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, 'lxml')
+
+        candidates = []
+        for link in soup.find_all('a', href=True):
+            href = link['href'].lower()
+            if any(kw in href for kw in ['contact','about','reach','support','help']):
+                full = normalize_url(urljoin(base_url, href))
+                candidates.append(full)
+
+        return list(set(candidates))
     except:
         return []
 
 def extract_contacts_from_page(url):
     phones, emails = set(), set()
+
     try:
-        r = requests.get(url, headers=HEADERS, timeout=12)
-        text = r.text
-        phones.update(re.findall(r'[6-9]\d{9}', text))
-        emails.update(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text))
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        visible_text = extract_visible_text(res.text)
+
+        # Extract emails from mailto:
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if 'mailto:' in href:
+                mail = href.split('mailto:')[-1].split('?')[0].strip()
+                if re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', mail):
+                    emails.add(mail)
+            if 'tel:' in href:
+                phone = re.sub(r'\D', '', href.split('tel:')[-1])
+                if len(phone) == 10 and phone[0] in '6789':
+                    phones.add(phone)
+
+        # Emails from visible text
+        emails.update(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', visible_text))
+
+        # Phones from text (India smart regex)
+        raw_nums = re.findall(r'(?:\+91[\s\-]*)?(?:0)?([6-9][\d\-\s\.]{8,15}\d)', visible_text)
+        for num in raw_nums:
+            clean = re.sub(r'\D', '', num)
+            if len(clean) == 10 and clean[0] in '6789':
+                phones.add(clean)
+
     except:
         pass
+
     return phones, emails
 
 all_contacts = []
 
-for _, row in tqdm(df_websites.iterrows(), total=len(df_websites), desc="Extracting contacts"):
+for _, row in tqdm(df_websites.iterrows(), total=len(df_websites), desc="Extracting contacts (Advanced)"):
     base = row['parent_link']
-    p,e = extract_contacts_from_page(base)
+    phone_set, email_set = set(), set()
+
+    # Homepage extraction
+    p, e = extract_contacts_from_page(base)
+    phone_set.update(p); email_set.update(e)
+
+    # Contact/about/support pages
     for page in find_contact_pages(base):
-        p2,e2 = extract_contacts_from_page(page)
-        p.update(p2); e.update(e2)
+        p2, e2 = extract_contacts_from_page(page)
+        phone_set.update(p2); email_set.update(e2)
+
     all_contacts.append({
         "Website": base,
-        "Phone Numbers": ", ".join(p),
-        "Email Addresses": ", ".join(e)
+        "Phone Numbers": ", ".join(sorted(phone_set)),
+        "Email Addresses": ", ".join(sorted(email_set))
     })
 
 df_contacts = pd.DataFrame(all_contacts)
+
 df_final = pd.merge(
     df_websites,
     df_contacts,
@@ -301,6 +323,7 @@ df_final = pd.merge(
     right_on="Website",
     how="left"
 )
+
 df_final.to_csv("B2B_Lead_Full_Output.csv", index=False)
 
 print("\n🎉 PIPELINE COMPLETE!")
