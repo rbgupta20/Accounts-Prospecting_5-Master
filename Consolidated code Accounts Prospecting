@@ -49,7 +49,7 @@ print("⏳ This may take some time depending on number of websites\n")
 # ==========================================
 # 1️⃣ SERPER GOOGLE SEARCH
 # ==========================================
-def get_serper_results(query, total_results=10):
+def get_serper_results(query, total_results=30):
     all_results = []
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
