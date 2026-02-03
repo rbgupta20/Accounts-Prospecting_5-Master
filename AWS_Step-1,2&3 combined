@@ -820,28 +820,32 @@ print("\n===============================================")
 print("🔗 MERGING ALL PIPELINE OUTPUTS INTO ONE MASTER FILE")
 print("===============================================\n")
 
-# Load outputs from Part-1
-df_web = pd.read_csv("B2B_Lead_Full_Output.csv")  # website + contacts + profile
-df_jamku_final = pd.read_csv("final_combined_output_with_matching.csv")  # GSTIN + Jamku + matching
+df_web = pd.read_csv("B2B_Lead_Full_Output.csv")
+df_jamku_final = pd.read_csv("final_combined_output_with_matching.csv")
+df_addr = pd.read_csv("final_company_addresses_with_cities.csv")
 
-# Rename for master merge consistency
-df_web.rename(columns={
-    "parent_link": "Company Link"
-}, inplace=True)
+# ---------------------------
+# FIX COLUMN NAME INCONSISTENCY
+# ---------------------------
+if "Company_Name" in df_web.columns:
+    df_web.rename(columns={"Company_Name": "Company Name"}, inplace=True)
 
-df_addr.rename(columns={
-    "Company Link": "Company Link"  # ensure same name
-}, inplace=True)
+if "Company_Name" in df_jamku_final.columns:
+    df_jamku_final.rename(columns={"Company_Name": "Company Name"}, inplace=True)
 
-# LEFT JOIN for COMPLETE coverage
+# Address file already has "Company Name"
+df_addr.rename(columns={"Company Link": "parent_link"}, inplace=True)
+
+# ---------------------------
+# MERGES
+# ---------------------------
 master_df = df_web.merge(df_jamku_final, on="Company Name", how="left")
-master_df = master_df.merge(df_addr, on=["Company Name", "Company Link"], how="left")
+master_df = master_df.merge(df_addr, on=["Company Name", "parent_link"], how="left")
 
 master_filename = "master_company_dataset.csv"
 master_df.to_csv(master_filename, index=False)
 
-print(f"\n🎉 MASTER FILE CREATED!")
-print(f"📁 Saved as: {master_filename}")
+print(f"\n🎉 MASTER FILE CREATED → {master_filename}")
 
 
 # ======================================================
