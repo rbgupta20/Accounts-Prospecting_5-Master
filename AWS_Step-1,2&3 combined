@@ -51,7 +51,7 @@ print(f"📍 Cities: {cities}\n")
 # ======================================================
 # STEP 1 — SERPER WEB SEARCH
 # ======================================================
-def get_serper_results(query, total_results=5):
+def get_serper_results(query, total_results=30):
     all_results = []
     url = "https://google.serper.dev/search"
     headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
