@@ -401,6 +401,39 @@ df_relevant.rename(columns={
 
 df_relevant = df_relevant[["Company Name", "Company Link", "Extracted Text"]]
 
+
+# ======================================================
+# CLEAN COMPANY NAMES BEFORE GSTIN LOOKUP
+# ======================================================
+
+def normalize_company_name(name):
+    if not isinstance(name, str):
+        return name
+
+    name = name.replace("Pvt.", "Private")
+    name = name.replace("pvt.", "Private")
+    name = name.replace("Pvt", "Private")
+    name = name.replace("pvt", "Private")
+
+    name = name.replace("Ltd.", "Limited")
+    name = name.replace("ltd.", "Limited")
+    name = name.replace("Ltd", "Limited")
+    name = name.replace("ltd", "Limited")
+
+    # Remove double spaces caused by replacements
+    name = " ".join(name.split())
+
+    return name
+
+# Apply cleanup
+df_relevant["Company Name"] = df_relevant["Company Name"].apply(normalize_company_name)
+
+# Save back the cleaned file
+df_relevant.to_csv("relevant_companies.csv", index=False)
+
+print("✨ Company names normalized before GSTIN search.")
+
+
 df_relevant.to_csv("relevant_companies.csv", index=False)
 
 print("\n🎯 relevant_companies.csv created with columns:")
@@ -408,6 +441,7 @@ print(df_relevant.columns.tolist())
 print("\n===============================================")
 print("🚀 STARTING GSTIN / JAMKU PIPELINE")
 print("===============================================\n")
+
 
 
 # ======================================================
