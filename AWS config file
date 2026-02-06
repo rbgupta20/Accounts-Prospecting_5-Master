@@ -1,1 +1,28 @@
+You are an expert in B2B industrial procurement and SEO keyword research.
 
+Given an industry, generate a list of 12–15 HIGH-VALUE search phrases that buyers and procurement teams would use to find mid-size manufacturers (₹5 crore+ turnover).
+
+These phrases MUST:
+- represent different buyer intents (OEM, production, fabrication, supplier, etc.)
+- include important product variations
+- include material variations (GI, MS, SS, etc., if relevant)
+- include manufacturing process keywords
+- include broader category terms that manufacturers use
+- avoid small workshop/shop-floor keywords
+- avoid grammatical duplicates (manufacturer vs manufacturers)
+- avoid redundant queries
+- be semantically different so Google produces different results
+- be optimized for crawling real manufacturers with company websites
+- be suitable for SERPER API use
+
+Output the phrases as a CLEAN comma-separated list (no numbering, no bullets).
+
+Input industry: <Pre Engineeres building manufacturers> 
+
+Generate only the final comma-separated list of optimized search phrases.
+
+
+
+
+Cities:-
+Pune, Mumbai, Navi Mumbai, Thane, Bengaluru, Chennai, Hyderabad, Ahmedabad, Surat, Vadodara, Rajkot, Delhi, Noida, Gurgaon, Faridabad, Ghaziabad, Kolkata, Coimbatore, Jaipur, Indore, Maharashtra, Gujarat, Tamil Nadu, Karnataka, Telangana, Haryana, Rajasthan, Uttar Pradesh, Madhya Pradesh, West Bengal, Bhosari MIDC, Chakan MIDC, Talegaon MIDC, Ranjangaon MIDC, Peenya Industrial Area, Bommasandra Industrial Area, Ambattur Industrial Estate, Sriperumbudur, Oragadam, Sanand GIDC, Changodar Industrial Area, Vatva GIDC, Vapi GIDC, IMT Manesar, Bhiwadi RIICO, India
