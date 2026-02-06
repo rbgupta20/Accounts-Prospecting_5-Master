@@ -80,7 +80,7 @@ for city in tqdm(cities, desc="Processing cities"):
     print(f"\n📍 City: {city}")
     for industry in industries:
         print(f"   🏭 Industry: {industry}")
-        query = f"{industry} companies in {city} -indiamart -justdial"
+        query = f"{industry} companies in {city} -indiamart -justdial -tradeindia -exportersindia"
         results = get_serper_results(query)
 
         for res in results:
