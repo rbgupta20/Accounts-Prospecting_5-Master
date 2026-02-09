@@ -1,1 +1,923 @@
+# ======================================================
+#  FULLY MERGED END-TO-END PIPELINE (PART 1)
+#  Website Scraping → GSTIN Scraping → Jamku → Name Matching
+#  CORE LOGIC UNCHANGED — only formatting / cleanup
+# ======================================================
 
+import os
+import requests
+import pandas as pd
+import time
+from tqdm import tqdm
+from urllib.parse import urlparse, urljoin, urlunparse
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+import re
+import urllib3
+from dotenv import load_dotenv
+import json
+import random
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+# ======================================================
+# LOAD CONFIG
+# ======================================================
+load_dotenv("config.env")
+
+industries_input = os.getenv("INDUSTRIES")
+cities_input = os.getenv("CITIES")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+industries = [i.strip() for i in industries_input.split(",")]
+cities = [c.strip() for c in cities_input.split(",")]
+
+
+print("\n🚀 Starting lead generation pipeline...")
+print(f"🔍 Industries: {industries}")
+print(f"📍 Cities: {cities}\n")
+
+
+# ======================================================
+# STEP 1 — SERPER WEB SEARCH
+# ======================================================
+def get_serper_results(query, total_results=30):
+    all_results = []
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    pages = (total_results + 9) // 10
+
+    for page in range(1, pages + 1):
+        try:
+            payload = {"q": query, "num": 10, "page": page}
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            data = response.json()
+            if "organic" in data:
+                all_results.extend(data["organic"])
+        except Exception as e:
+            print(f"❌ Serper error ({query} p{page}): {e}")
+        time.sleep(1.5)
+
+    return all_results[:total_results]
+
+
+all_data = []
+seen_links = set()
+
+print("🌐 Step 1: Researching online...")
+
+for city in tqdm(cities, desc="Processing cities"):
+    print(f"\n📍 City: {city}")
+    for industry in industries:
+        print(f"   🏭 Industry: {industry}")
+        query = f"{industry} companies in {city} -indiamart -justdial -tradeindia -exportersindia"
+        results = get_serper_results(query)
+
+        for res in results:
+            link = res.get("link", "").strip()
+            if not link or link in seen_links:
+                continue
+
+            seen_links.add(link)
+            all_data.append({
+                "industry": industry,
+                "city": city,
+                "search_query": query,
+                "title": res.get("title", ""),
+                "website": link,
+                "snippet": res.get("snippet", ""),
+                "displayed_link": res.get("displayed_link", link)
+            })
+
+df_websites = pd.DataFrame(all_data)
+df_websites.to_csv("lead_generation_results.csv", index=False)
+
+print(f"\n✅ Step 1 Complete: {len(df_websites)} websites collected.\n")
+
+
+# ======================================================
+# STEP 2 — EXTRACT PARENT DOMAIN
+# ======================================================
+def get_parent_link(website):
+    try:
+        parsed = urlparse(website)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    except:
+        return ""
+
+df_websites["parent_link"] = df_websites["website"].apply(get_parent_link)
+df_websites = df_websites.drop_duplicates(subset=["parent_link"]).reset_index(drop=True)
+
+print(f"🔗 Step 2 Complete: {len(df_websites)} parent links.\n")
+
+
+# ======================================================
+# STEP 3 — SCRAPE RAW TEXT FROM HOMEPAGE
+# ======================================================
+ua = UserAgent()
+
+def smart_get(url, retries=3):
+    if not isinstance(url, str) or not url.strip():
+        return "Error: Invalid URL"
+
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    for attempt in range(retries):
+        try:
+            headers = {
+                "User-Agent": ua.random,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            res = requests.get(url, timeout=12, headers=headers, verify=False)
+            if res.status_code == 200:
+                return res.text
+            if res.status_code in [403, 406, 429, 500, 502]:
+                time.sleep(2 + attempt)
+                continue
+            return f"Error: HTTP {res.status_code}"
+        except Exception as e:
+            if attempt == retries - 1:
+                return f"Error: {e}"
+            time.sleep(1)
+
+    return "Error: Max retries exceeded"
+
+
+def extract_text(url):
+    html = smart_get(url)
+    if html is None or str(html).startswith("Error"):
+        return html
+
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript", "iframe"]):
+            tag.decompose()
+        return soup.get_text(" ", strip=True)
+    except:
+        return "Error parsing HTML"
+
+
+print("📄 Step 3: Extracting homepage text...")
+df_websites["Extracted_Raw_Text"] = df_websites["parent_link"].apply(extract_text)
+print("✅ Step 3 Complete.\n")
+
+
+# ======================================================
+# STEP 4 — AI EXTRACTION: COMPANY NAME
+# ======================================================
+def extract_company_name(url, html_text):
+    endpoint = "https://api.deepseek.com/v1/chat/completions"
+
+    prompt = (
+        "Extract ONLY the company name from the following website content.\n"
+        f"Website URL: {url}\n"
+        f"HTML Page Text:\n{html_text}\n"
+        "Return ONLY the company name."
+    )
+
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0}
+
+    try:
+        res = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except:
+        return "ERROR"
+
+
+print("🏷 Step 4: Extracting company names...")
+df_websites["Company_Name"] = df_websites.apply(
+    lambda r: extract_company_name(r["parent_link"], r["Extracted_Raw_Text"]),
+    axis=1
+)
+print("✅ Step 4 Complete.\n")
+
+
+# ======================================================
+# STEP 5 — SCRAPE ABOUT PAGE (COMPANY PROFILE)
+# ======================================================
+HEADERS = {'User-Agent': 'Mozilla/5.0'}
+
+def extract_visible_text_clean(html):
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(['script','style','noscript','header','footer','form','svg','nav']):
+        tag.decompose()
+    return " ".join(soup.stripped_strings)
+
+def find_about_page(base_url):
+    try:
+        r = requests.get(base_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "lxml")
+        return [
+            urljoin(base_url, a['href'])
+            for a in soup.find_all('a', href=True)
+            if any(k in a['href'].lower() for k in ['about', 'profile', 'company'])
+        ]
+    except:
+        return []
+
+def extract_company_profile(url):
+    pages = find_about_page(url)
+    for p in pages:
+        try:
+            r = requests.get(p, headers=HEADERS, timeout=10)
+            text = extract_visible_text_clean(r.text)
+            if len(text) > 100:
+                return text
+        except:
+            pass
+    return ""
+
+print("🧾 Step 5: Extracting company profiles...")
+df_websites["Company_Profile"] = df_websites["parent_link"].apply(extract_company_profile)
+print("✅ Step 5 Complete.\n")
+
+
+# ======================================================
+# STEP 6 — AI CLASSIFY RELEVANCY
+# ======================================================
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+
+def classify_company(name, profile, industry):
+    prompt = (
+        f"You are a B2B industry classification expert.\n"
+        f"Company Name: {name}\n"
+        f"Company Profile: {profile}\n"
+        f"Question: Is this company primarily involved in {industry} activities requiring STEEL? "
+        f"Answer YES / NO / UNCLEAR only."
+    )
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+
+    try:
+        r = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        return r.json()["choices"][0]["message"]["content"].strip().upper()
+    except:
+        return "ERROR"
+
+
+print("🧠 Step 6: Classifying relevancy...")
+df_websites["Relevancy"] = df_websites.apply(
+    lambda r: classify_company(r["Company_Name"], r["Company_Profile"], r["industry"]),
+    axis=1
+)
+print("✅ Step 6 Complete.\n")
+
+
+# ======================================================
+# STEP 7 — CONTACT SCRAPING
+# ======================================================
+def extract_visible_text(html):
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(['script','style','noscript','header','footer','form','svg','nav']):
+        tag.decompose()
+    return " ".join(soup.stripped_strings)
+
+def normalize_url(url):
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+
+def find_contact_pages(base_url):
+    try:
+        r = requests.get(base_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "lxml")
+        candidates = []
+        for link in soup.find_all('a', href=True):
+            href = link['href'].lower()
+            if any(kw in href for kw in ['contact', 'about', 'reach', 'support', 'help']):
+                candidates.append(normalize_url(urljoin(base_url, href)))
+        return list(set(candidates))
+    except:
+        return []
+
+def extract_contacts_from_page(url):
+    phones, emails = set(), set()
+
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        soup = BeautifulSoup(res.text, "html.parser")
+        visible = extract_visible_text(res.text)
+
+        # Mailto:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "mailto:" in href:
+                mail = href.split("mailto:")[-1].split("?")[0].strip()
+                if re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", mail):
+                    emails.add(mail)
+
+            if "tel:" in href:
+                num = re.sub(r"\D", "", href.split("tel:")[-1])
+                if len(num) == 10 and num[0] in "6789":
+                    phones.add(num)
+
+        # Emails in text
+        emails.update(re.findall(r"[\w\.-]+@[\w\.-]+\.\w+", visible))
+
+        # Phones in text
+        raw_nums = re.findall(r'(?:\+91[\s\-]*)?(?:0)?([6-9][\d\-\s\.]{8,15}\d)', visible)
+        for num in raw_nums:
+            clean = re.sub(r"\D", "", num)
+            if len(clean) == 10 and clean[0] in "6789":
+                phones.add(clean)
+
+    except:
+        pass
+
+    return phones, emails
+
+
+print("📞 Step 7: Extracting contacts...")
+
+all_contacts = []
+
+for _, row in tqdm(df_websites.iterrows(), total=len(df_websites), desc="Contacts"):
+    base = row["parent_link"]
+
+    phone_set, email_set = set(), set()
+
+    # Homepage
+    p, e = extract_contacts_from_page(base)
+    phone_set.update(p)
+    email_set.update(e)
+
+    # Contact pages
+    for page in find_contact_pages(base):
+        p2, e2 = extract_contacts_from_page(page)
+        phone_set.update(p2)
+        email_set.update(e2)
+
+    all_contacts.append({
+        "Website": base,
+        "Phone Numbers": ", ".join(sorted(phone_set)),
+        "Email Addresses": ", ".join(sorted(email_set))
+    })
+
+
+df_contacts = pd.DataFrame(all_contacts)
+
+df_final = pd.merge(
+    df_websites,
+    df_contacts,
+    left_on="parent_link",
+    right_on="Website",
+    how="left"
+)
+
+df_final.to_csv("B2B_Lead_Full_Output.csv", index=False)
+
+print("\n🎯 Website + Contact scraping completed.")
+print("📁 File saved: B2B_Lead_Full_Output.csv\n")
+
+
+# ======================================================
+# PREPARE RELEVANT COMPANIES FOR NEXT PHASE
+# ======================================================
+df_relevant = df_final[df_final["Relevancy"] == "YES"].copy()
+
+df_relevant.rename(columns={
+    "Company_Name": "Company Name",
+    "parent_link": "Company Link",
+    "Extracted_Raw_Text": "Extracted Text"
+}, inplace=True)
+
+df_relevant = df_relevant[["Company Name", "Company Link", "Extracted Text"]]
+
+
+# ======================================================
+# CLEAN COMPANY NAMES BEFORE GSTIN LOOKUP
+# ======================================================
+
+def normalize_company_name(name):
+    if not isinstance(name, str):
+        return name
+
+    name = name.replace("Pvt.", "Private")
+    name = name.replace("pvt.", "Private")
+    name = name.replace("Pvt", "Private")
+    name = name.replace("pvt", "Private")
+
+    name = name.replace("Ltd.", "Limited")
+    name = name.replace("ltd.", "Limited")
+    name = name.replace("Ltd", "Limited")
+    name = name.replace("ltd", "Limited")
+
+    # Remove double spaces caused by replacements
+    name = " ".join(name.split())
+
+    return name
+
+# Apply cleanup
+df_relevant["Company Name"] = df_relevant["Company Name"].apply(normalize_company_name)
+
+# Save back the cleaned file
+df_relevant.to_csv("relevant_companies.csv", index=False)
+
+print("✨ Company names normalized before GSTIN search.")
+
+
+df_relevant.to_csv("relevant_companies.csv", index=False)
+
+print("\n🎯 relevant_companies.csv created with columns:")
+print(df_relevant.columns.tolist())
+print("\n===============================================")
+print("🚀 STARTING GSTIN / JAMKU PIPELINE")
+print("===============================================\n")
+
+
+
+# ======================================================
+# CHROME + SELENIUM INSTALLATION
+# ======================================================
+print("📦 Installing Chrome & Selenium dependencies...")
+os.system("apt-get update -qq")
+os.system("wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb")
+os.system("apt install -y ./google-chrome-stable_current_amd64.deb -qq")
+os.system("pip install -q selenium webdriver-manager pandas tqdm requests")
+
+
+# ======================================================
+# LOAD RELEVANT COMPANIES (AUTO LOAD)
+# ======================================================
+df = pd.read_csv("relevant_companies.csv")
+print(f"✅ Loaded {len(df)} relevant companies.\n")
+
+
+# ======================================================
+# GSTIN LOOKUP & REGEX
+# ======================================================
+GSTIN_REGEX = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]\b")
+
+def fetch_raw_serper_response(company_name):
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    payload = {"q": f"{company_name} GSTIN"}
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def extract_gstins_best(company_name, raw_json):
+    organic = raw_json.get("organic", []) or []
+    gstin_scores = []
+
+    for res in organic:
+        text = " ".join([
+            str(res.get("title", "")),
+            str(res.get("snippet", "")),
+            str(res.get("link", "")),
+        ])
+        found = GSTIN_REGEX.findall(text)
+
+        for gstin in found:
+            score = 0
+            if company_name.lower() in text.lower():
+                score += 3
+
+            pos = res.get("position", 10)
+            score += max(0, 5 - pos)
+
+            gstin_scores.append((gstin, score))
+
+    if not gstin_scores:
+        return []
+
+    score_map = {}
+    for gstin, score in gstin_scores:
+        score_map[gstin] = score_map.get(gstin, 0) + score
+
+    best_score = max(score_map.values())
+    return [gst for gst, score in score_map.items() if score == best_score]
+
+
+def get_pan_from_gstin(gstin):
+    if isinstance(gstin, str) and len(gstin) >= 12:
+        return gstin[2:12]
+    return None
+
+
+# ======================================================
+# STEP 1 — SERPER LOOKUP
+# ======================================================
+print("🔍 Fetching Serper results (GSTIN lookup)...")
+
+serper_jsons = []
+for company in tqdm(df["Company Name"]):
+    serper_jsons.append(fetch_raw_serper_response(company))
+
+df["Serper Raw Response"] = [json.dumps(r, ensure_ascii=False) for r in serper_jsons]
+
+
+# ======================================================
+# STEP 2 — GSTIN EXTRACTION
+# ======================================================
+df["GSTIN List"] = [
+    extract_gstins_best(company, raw)
+    for company, raw in zip(df["Company Name"], serper_jsons)
+]
+
+df = df.explode("GSTIN List").reset_index(drop=True)
+df.rename(columns={"GSTIN List": "GSTIN"}, inplace=True)
+
+df["GSTIN"] = df["GSTIN"].fillna("").astype(str)
+df.loc[df["GSTIN"] == "nan", "GSTIN"] = ""
+
+df["PAN"] = df["GSTIN"].apply(get_pan_from_gstin)
+df = df.drop_duplicates(subset=["Company Name", "PAN"])
+df.drop(columns=["PAN"], inplace=True)
+df.reset_index(drop=True, inplace=True)
+
+
+# ======================================================
+# STEP 3 — SELENIUM JAMKU SCRAPING
+# ======================================================
+print("🧾 Scraping Jamku GST portal...")
+
+chrome_options = Options()
+chrome_options.add_argument("--headless=new")
+chrome_options.add_argument("--disable-gpu")
+chrome_options.add_argument("--window-size=1920,1080")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+
+driver = webdriver.Chrome(
+    service=Service(ChromeDriverManager().install()),
+    options=chrome_options
+)
+
+driver.get("https://gst.jamku.app/gstin/08AAACZ4832E1ZD")
+time.sleep(4)
+
+columns_order = [
+    'Trade Name', 'Legal Name', 'Registration Status', 'Registration Date',
+    'Entity Type', 'Place of Business (Address)', 'E-Invoice mandatory?',
+    'Aggregate Turnover', 'Central Jurisdiction', 'State Jurisdiction'
+]
+
+
+def scrape_jamku(gstin):
+    empty = {col: "" for col in columns_order}
+
+    if not gstin:
+        return empty
+
+    try:
+        box = WebDriverWait(driver, 12).until(
+            EC.presence_of_element_located((By.ID, "gstnosearch"))
+        )
+        box.clear()
+        box.send_keys(gstin)
+
+        btn = driver.find_element(
+            By.XPATH,
+            '//*[@id="__nuxt"]/div/div[2]/div/div/main/div[2]/div[2]/div/div/button'
+        )
+        btn.click()
+    except:
+        return empty
+
+    time.sleep(random.uniform(3, 5))
+
+    try:
+        tbtn = driver.find_element(
+            By.CSS_SELECTOR,
+            'button.border.rounded.bg-gray-300.border-blue-300.p-2'
+        )
+        tbtn.click()
+        time.sleep(1)
+    except:
+        pass
+
+    out = empty.copy()
+
+    try:
+        parent = driver.find_element(
+            By.XPATH,
+            '//*[@id="__nuxt"]/div/div[2]/div/div/main/div[1]/section[1]/div[2]'
+        )
+
+        for div in parent.find_elements(By.TAG_NAME, "div"):
+            text = div.text.strip()
+            if "\n" in text:
+                k, v = text.split("\n", 1)
+                if k.strip() in out:
+                    out[k.strip()] = v.strip()
+
+    except:
+        pass
+
+    return out
+
+
+# ======================================================
+# BATCHED JAMKU SCRAPING (50 COMPANIES PER BATCH)
+# ======================================================
+
+BATCH_SIZE = 50
+total = len(df)
+num_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
+
+print(f"📦 Total rows for Jamku: {total}")
+print(f"🔄 Jamku processing in batches of {BATCH_SIZE} → {num_batches} batches.\n")
+
+jamku_rows = []
+cache = {}
+
+for batch_idx in range(num_batches):
+    start = batch_idx * BATCH_SIZE
+    end = min(start + BATCH_SIZE, total)
+    df_batch = df.iloc[start:end].copy()
+
+    print(f"\n==============================")
+    print(f"🚀 Starting Jamku Batch {batch_idx+1}/{num_batches}")
+    print(f"🧾 Rows {start} → {end-1}")
+    print("==============================")
+
+    # Loop inside a batch
+    for _, row in tqdm(df_batch.iterrows(), total=len(df_batch), desc=f"Jamku Batch {batch_idx+1}"):
+        gstin = row["GSTIN"]
+
+        if gstin not in cache:
+            cache[gstin] = scrape_jamku(gstin)
+
+        jamku_rows.append({
+            "Company Name": row["Company Name"],
+            "Serper Raw Response": row["Serper Raw Response"],
+            "GSTIN": gstin,
+            **cache[gstin]
+        })
+
+    print(f"✅ Completed Batch {batch_idx+1}\n")
+
+print("🎉 All Jamku batches completed!")
+df_jamku = pd.DataFrame(jamku_rows)
+
+
+# ======================================================
+# STEP 4 — DEEPSEEK NAME MATCH
+# ======================================================
+def clean_deepseek_json(raw_text):
+    if not raw_text:
+        return raw_text
+
+    txt = raw_text.strip()
+
+    if txt.startswith("```"):
+        txt = txt.replace("```json", "").replace("```", "").strip()
+
+    if txt.startswith('"') and txt.endswith('"'):
+        txt = txt[1:-1]
+
+    txt = txt.replace('\\"', '"')
+    return txt.strip()
+
+
+def check_name_match(company_name, trade_name):
+    prompt = f"""
+    Compare the following names and determine if they refer to the same company.
+
+    Input Company Name: {company_name}
+    Jamku Trade Name: {trade_name}
+
+    Respond ONLY in JSON:
+    {{
+        "match": "",
+        "reason": ""
+    }}
+    """
+
+    url = "https://api.deepseek.com/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "You are an expert company identity verifier."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.2
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"]
+        cleaned = clean_deepseek_json(raw)
+
+        try:
+            parsed = json.loads(cleaned)
+            return parsed.get("match", ""), parsed.get("reason", ""), raw
+        except:
+            return "Error", "Invalid JSON (after cleaning)", raw
+
+    except Exception as e:
+        return "Error", str(e), ""
+
+
+print("\n🤖 Running DeepSeek Name Matching...")
+
+results = []
+
+for _, row in tqdm(df_jamku.iterrows(), total=len(df_jamku)):
+    company = row["Company Name"]
+    trade = row["Trade Name"]
+
+    match, reason, raw_json = check_name_match(company, trade)
+
+    row["Name Match?"] = match
+    row["Name Match Reason"] = reason
+    row["Name Match Raw JSON"] = raw_json
+
+    results.append(row)
+
+
+# ======================================================
+# FINAL OUTPUT BEFORE ADDRESS PIPELINE
+# ======================================================
+final_jamku_df = pd.DataFrame(results)
+final_jamku_df.to_csv("final_combined_output_with_matching.csv", index=False)
+
+print("\n🎉 PART 1 COMPLETE!")
+print("📁 B2B_Lead_Full_Output.csv")
+print("📁 relevant_companies.csv")
+print("📁 final_combined_output_with_matching.csv")
+
+# ======================================================
+# 📍 PART 2 — ADDRESS EXTRACTION + MASTER MERGE + S3 UPLOAD
+# ======================================================
+
+print("\n===============================================")
+print("🏁 STARTING ADDRESS EXTRACTION PIPELINE")
+print("===============================================\n")
+
+df_addr = pd.read_csv("relevant_companies.csv")
+
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+addr_headers = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+}
+
+# ------------------------------------------------------
+# STEP A — Extract labeled addresses
+# ------------------------------------------------------
+def extract_labeled_addresses(text, max_addresses=5):
+    prompt = f"""
+You are an AI that extracts ALL complete postal addresses from website content.
+Assign label like: Head Office, Registered Office, Factory, Plant, Branch, Sales Office, Warehouse etc.
+
+Return STRICT JSON list only:
+[
+  {{"label": "Head Office", "address": "Plot 12, Industrial Area, Mumbai"}},
+  {{"label": "Factory", "address": "GIDC Phase 2, Ahmedabad"}}
+]
+
+TEXT:
+{text}
+"""
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+
+    try:
+        res = requests.post(DEEPSEEK_URL, headers=addr_headers, json=payload, timeout=30)
+        raw = res.json()["choices"][0]["message"]["content"].strip().replace("\n", "")
+
+        # Convert AI output → Python list
+        arr = eval(raw) if raw.startswith("[") else []
+
+        # 🔥 LIMIT TO MAX 5 ADDRESSES
+        return arr[:max_addresses]
+
+    except:
+        return []
+
+
+
+print("🔍 Extracting labeled addresses...")
+df_addr["Raw Address Data"] = df_addr["Extracted Text"].fillna("").apply(extract_labeled_addresses)
+
+
+# ------------------------------------------------------
+# STEP B — Expand into Address 1 / Address 2 / ...
+# ------------------------------------------------------
+max_count = min(5, max(len(a) for a in df_addr["Raw Address Data"]))
+print(f"📌 Maximum addresses detected: {max_count}")
+
+for i in range(max_count):
+    df_addr[f"Address {i+1}"] = df_addr["Raw Address Data"].apply(
+        lambda arr: f"{arr[i]['label']}: {arr[i]['address']}" if i < len(arr) else ""
+    )
+
+df_addr.drop(columns=["Raw Address Data"], inplace=True)
+
+
+# ------------------------------------------------------
+# STEP C — Extract city for each address
+# ------------------------------------------------------
+def extract_city(address):
+    if not address.strip():
+        return ""
+
+    prompt = f"Extract ONLY the city name from this Indian address:\n{address}\nReturn ONLY the city."
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+
+    try:
+        r = requests.post(DEEPSEEK_URL, headers=addr_headers, json=payload, timeout=20)
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except:
+        return "Error"
+
+
+address_columns = [c for c in df_addr.columns if c.startswith("Address ")]
+
+for col in address_columns:
+    print(f"🏙️ Extracting city for {col} ...")
+    df_addr[f"{col} City"] = df_addr[col].apply(extract_city)
+
+
+# ------------------------------------------------------
+# STEP D — Save address output
+# ------------------------------------------------------
+addr_output = "final_company_addresses_with_cities.csv"
+df_addr.to_csv(addr_output, index=False)
+
+print(f"\n📁 Address + City file saved: {addr_output}")
+
+
+# ======================================================
+#  MASTER MERGE (USING parent_link)
+# ======================================================
+
+print("\n===============================================")
+print("🔗 MERGING ALL PIPELINE OUTPUTS INTO ONE MASTER FILE")
+print("===============================================\n")
+
+df_web = pd.read_csv("B2B_Lead_Full_Output.csv")
+df_jamku_final = pd.read_csv("final_combined_output_with_matching.csv")
+df_addr = pd.read_csv("final_company_addresses_with_cities.csv")
+
+# ---------------------------
+# FIX COLUMN NAME INCONSISTENCY
+# ---------------------------
+if "Company_Name" in df_web.columns:
+    df_web.rename(columns={"Company_Name": "Company Name"}, inplace=True)
+
+if "Company_Name" in df_jamku_final.columns:
+    df_jamku_final.rename(columns={"Company_Name": "Company Name"}, inplace=True)
+
+# Address file already has "Company Name"
+df_addr.rename(columns={"Company Link": "parent_link"}, inplace=True)
+
+# ---------------------------
+# MERGES
+# ---------------------------
+master_df = df_web.merge(df_jamku_final, on="Company Name", how="left")
+master_df = master_df.merge(df_addr, on=["Company Name", "parent_link"], how="left")
+
+master_filename = "master_company_dataset.csv"
+master_df.to_csv(master_filename, index=False)
+
+print(f"\n🎉 MASTER FILE CREATED → {master_filename}")
+
+
+# ======================================================
+#  UPLOAD MASTER FILE TO S3
+# ======================================================
+print("\n📤 Uploading master file to S3...")
+
+os.system(f"aws s3 cp {master_filename} s3://prospectingec2/master_company_dataset.csv")
+
+print("\n✅ Upload Complete!")
+print("🚀 FULL PIPELINE DONE")
