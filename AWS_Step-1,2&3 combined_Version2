@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 import json
 import random
 
+
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -27,6 +29,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+from datetime import datetime
+
+
 
 
 # ======================================================
@@ -42,6 +48,10 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 industries = [i.strip() for i in industries_input.split(",")]
 cities = [c.strip() for c in cities_input.split(",")]
 
+RUN_ID = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+def upload_to_s3(local_file):
+    os.system(f"aws s3 cp {local_file} s3://prospectingec2/runs/{RUN_ID}/{local_file}")
 
 print("\n🚀 Starting lead generation pipeline...")
 print(f"🔍 Industries: {industries}")
@@ -101,6 +111,8 @@ for city in tqdm(cities, desc="Processing cities"):
 
 df_websites = pd.DataFrame(all_data)
 df_websites.to_csv("lead_generation_results.csv", index=False)
+upload_to_s3("lead_generation_results.csv")
+
 
 print(f"\n✅ Step 1 Complete: {len(df_websites)} websites collected.\n")
 
@@ -383,6 +395,8 @@ df_final = pd.merge(
 )
 
 df_final.to_csv("B2B_Lead_Full_Output.csv", index=False)
+upload_to_s3("B2B_Lead_Full_Output.csv")
+
 
 print("\n🎯 Website + Contact scraping completed.")
 print("📁 File saved: B2B_Lead_Full_Output.csv\n")
@@ -431,10 +445,12 @@ df_relevant["Company Name"] = df_relevant["Company Name"].apply(normalize_compan
 # Save back the cleaned file
 df_relevant.to_csv("relevant_companies.csv", index=False)
 
+
 print("✨ Company names normalized before GSTIN search.")
 
 
 df_relevant.to_csv("relevant_companies.csv", index=False)
+upload_to_s3("relevant_companies.csv")
 
 print("\n🎯 relevant_companies.csv created with columns:")
 print(df_relevant.columns.tolist())
@@ -760,6 +776,8 @@ for _, row in tqdm(df_jamku.iterrows(), total=len(df_jamku)):
 # ======================================================
 final_jamku_df = pd.DataFrame(results)
 final_jamku_df.to_csv("final_combined_output_with_matching.csv", index=False)
+upload_to_s3("final_combined_output_with_matching.csv")
+
 
 print("\n🎉 PART 1 COMPLETE!")
 print("📁 B2B_Lead_Full_Output.csv")
@@ -872,6 +890,7 @@ for col in address_columns:
 # ------------------------------------------------------
 addr_output = "final_company_addresses_with_cities.csv"
 df_addr.to_csv(addr_output, index=False)
+upload_to_s3("final_company_addresses_with_cities.csv")
 
 print(f"\n📁 Address + City file saved: {addr_output}")
 
