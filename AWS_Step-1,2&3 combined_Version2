@@ -361,7 +361,8 @@ print("📞 Step 7: Extracting contacts...")
 
 all_contacts = []
 
-for _, row in tqdm(df_websites.iterrows(), total=len(df_websites), desc="Contacts"):
+df_contacts_input = df_websites[df_websites["Relevancy"] == "YES"]
+for _, row in tqdm(df_contacts_input.iterrows(), total=len(df_contacts_input), desc="Contacts"):
     base = row["parent_link"]
 
     phone_set, email_set = set(), set()
