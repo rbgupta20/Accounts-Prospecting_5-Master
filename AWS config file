@@ -3,9 +3,8 @@ You are an expert in B2B industrial procurement and SEO keyword research.
 Given an industry, generate a list of 12–15 HIGH-VALUE search phrases that buyers and procurement teams would use to find mid-size manufacturers (₹5 crore+ turnover).
 
 These phrases MUST:
-- represent different buyer intents (OEM, production, fabrication, supplier, etc.)
 - include important product variations
-- include material variations (GI, MS, SS, etc., if relevant)
+- include material variations
 - include manufacturing process keywords
 - include broader category terms that manufacturers use
 - avoid small workshop/shop-floor keywords
