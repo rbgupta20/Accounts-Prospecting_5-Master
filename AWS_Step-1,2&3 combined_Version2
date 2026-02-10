@@ -138,11 +138,16 @@ print(f"🔗 Step 2 Complete: {len(df_websites)} parent links.\n")
 # ======================================================
 ua = UserAgent()
 
+# ======================================================
+# SAFE HTML FETCHER (PREVENTS BINARY JUNK)
+# ======================================================
 def smart_get(url, retries=3):
     if not isinstance(url, str) or not url.strip():
-        return "Error: Invalid URL"
+        return None
 
     url = url.strip()
+
+    # Ensure URL starts with http/https
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
@@ -150,41 +155,82 @@ def smart_get(url, retries=3):
         try:
             headers = {
                 "User-Agent": ua.random,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "*/*",
             }
+
             res = requests.get(url, timeout=12, headers=headers, verify=False)
+
+            # 🔥 1 — Reject all non-HTML content (PDF, images, docs, binary)
+            content_type = res.headers.get("Content-Type", "").lower()
+            if "text/html" not in content_type:
+                return None
+
+            # 🔥 2 — Decode correctly to avoid corrupted characters
+            res.encoding = res.apparent_encoding
+
             if res.status_code == 200:
                 return res.text
-            if res.status_code in [403, 406, 429, 500, 502]:
-                time.sleep(2 + attempt)
-                continue
-            return f"Error: HTTP {res.status_code}"
-        except Exception as e:
-            if attempt == retries - 1:
-                return f"Error: {e}"
+
             time.sleep(1)
 
-    return "Error: Max retries exceeded"
+        except Exception:
+            if attempt == retries - 1:
+                return None
+            time.sleep(1)
+
+    return None
 
 
+# ======================================================
+# EXTRACT CLEAN TEXT ONLY FROM VALID HTML
+# ======================================================
 def extract_text(url):
     html = smart_get(url)
-    if html is None or str(html).startswith("Error"):
-        return html
+
+    # If no valid HTML, skip
+    if html is None:
+        return ""
 
     try:
         soup = BeautifulSoup(html, "lxml")
+
+        # Remove noise
         for tag in soup(["script", "style", "noscript", "iframe"]):
             tag.decompose()
-        return soup.get_text(" ", strip=True)
+
+        # Return clean text
+        text = soup.get_text(" ", strip=True)
+
+        # 🔥 3 — Remove any leftover junk non-printable characters
+        text = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\u0080-\uFFFF]", "", text)
+
+        return text
+
     except:
-        return "Error parsing HTML"
+        return ""
 
 
 print("📄 Step 3: Extracting homepage text...")
 df_websites["Extracted_Raw_Text"] = df_websites["parent_link"].apply(extract_text)
 print("✅ Step 3 Complete.\n")
+
+
+# ======================================================
+# NORMALIZE COMPANY NAME EARLY
+# ======================================================
+def normalize_company_name(name):
+    if not isinstance(name, str):
+        return name
+
+    name = name.replace("Pvt.", "Private").replace("pvt.", "Private")
+    name = name.replace("Pvt", "Private").replace("pvt", "Private")
+    name = name.replace("Ltd.", "Limited").replace("ltd.", "Limited")
+    name = name.replace("Ltd", "Limited").replace("ltd", "Limited")
+
+    name = re.sub(r'[^A-Za-z0-9 ]+', ' ', name)
+    name = " ".join(name.split())
+    return name.strip()
+
 
 
 # ======================================================
@@ -211,10 +257,15 @@ def extract_company_name(url, html_text):
 
 
 print("🏷 Step 4: Extracting company names...")
+def extract_and_normalize_company_name(url, html_text):
+    raw = extract_company_name(url, html_text)
+    return normalize_company_name(raw)
+
 df_websites["Company_Name"] = df_websites.apply(
-    lambda r: extract_company_name(r["parent_link"], r["Extracted_Raw_Text"]),
+    lambda r: extract_and_normalize_company_name(r["parent_link"], r["Extracted_Raw_Text"]),
     axis=1
 )
+
 print("✅ Step 4 Complete.\n")
 
 
@@ -261,7 +312,7 @@ print("✅ Step 5 Complete.\n")
 # ======================================================
 # STEP 6 — AI CLASSIFY RELEVANCY
 # ======================================================
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 def classify_company(name, profile, industry):
     prompt = (
@@ -404,7 +455,7 @@ print("📁 File saved: B2B_Lead_Full_Output.csv\n")
 
 
 # ======================================================
-# PREPARE RELEVANT COMPANIES FOR NEXT PHASE
+# PREPARE RELEVANT COMPANIES FOR NEXT PHASE (DEDUPED)
 # ======================================================
 df_relevant = df_final[df_final["Relevancy"] == "YES"].copy()
 
@@ -414,44 +465,20 @@ df_relevant.rename(columns={
     "Extracted_Raw_Text": "Extracted Text"
 }, inplace=True)
 
+# Select only needed columns
 df_relevant = df_relevant[["Company Name", "Company Link", "Extracted Text"]]
 
+# 🔥 REMOVE DUPLICATES BY COMPANY NAME
+before = len(df_relevant)
+df_relevant = df_relevant.drop_duplicates(subset=["Company Name"], keep="first").reset_index(drop=True)
+after = len(df_relevant)
 
-# ======================================================
-# CLEAN COMPANY NAMES BEFORE GSTIN LOOKUP
-# ======================================================
+print(f"🧹 Dedup relevant companies: {before} → {after}")
 
-def normalize_company_name(name):
-    if not isinstance(name, str):
-        return name
-
-    name = name.replace("Pvt.", "Private")
-    name = name.replace("pvt.", "Private")
-    name = name.replace("Pvt", "Private")
-    name = name.replace("pvt", "Private")
-
-    name = name.replace("Ltd.", "Limited")
-    name = name.replace("ltd.", "Limited")
-    name = name.replace("Ltd", "Limited")
-    name = name.replace("ltd", "Limited")
-
-    # Remove double spaces caused by replacements
-    name = " ".join(name.split())
-
-    return name
-
-# Apply cleanup
-df_relevant["Company Name"] = df_relevant["Company Name"].apply(normalize_company_name)
-
-# Save back the cleaned file
-df_relevant.to_csv("relevant_companies.csv", index=False)
-
-
-print("✨ Company names normalized before GSTIN search.")
-
-
+# SAVE FILE
 df_relevant.to_csv("relevant_companies.csv", index=False)
 upload_to_s3("relevant_companies.csv")
+
 
 print("\n🎯 relevant_companies.csv created with columns:")
 print(df_relevant.columns.tolist())
@@ -725,7 +752,7 @@ def check_name_match(company_name, trade_name):
     }}
     """
 
-    url = "https://api.deepseek.com/chat/completions"
+url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
