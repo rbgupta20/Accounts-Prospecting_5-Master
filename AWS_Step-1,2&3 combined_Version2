@@ -882,6 +882,41 @@ TEXT:
 print("🔍 Extracting labeled addresses...")
 df_addr["Raw Address Data"] = df_addr["Extracted Text"].fillna("").apply(extract_labeled_addresses)
 
+# ------------------------------------------------------
+# REORDER ADDRESSES BASED ON PRIORITY
+# ------------------------------------------------------
+
+PRIORITY_LABELS = [
+    "Head Office",
+    "Registered Office",
+    "Corporate Office",
+    "Corporate Address",
+    "Registered Address"
+]
+
+def prioritize_addresses(addr_list):
+    if not isinstance(addr_list, list):
+        return []
+
+    # 1️⃣ High-priority addresses first
+    priority_items = [
+        item for item in addr_list
+        if any(item["label"].strip().lower() == p.lower() for p in PRIORITY_LABELS)
+    ]
+
+    # 2️⃣ Remaining addresses afterward
+    other_items = [
+        item for item in addr_list
+        if item not in priority_items
+    ]
+
+    # 3️⃣ Combine
+    return priority_items + other_items
+
+
+# Apply prioritization
+df_addr["Raw Address Data"] = df_addr["Raw Address Data"].apply(prioritize_addresses)
+
 
 # ------------------------------------------------------
 # STEP B — Expand into Address 1 / Address 2 / ...
