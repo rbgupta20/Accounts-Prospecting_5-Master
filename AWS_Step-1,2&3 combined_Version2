@@ -17,6 +17,8 @@ import urllib3
 from dotenv import load_dotenv
 import json
 import random
+import ast
+
 
 
 
@@ -127,8 +129,8 @@ def get_parent_link(website):
     except:
         return ""
 
-df_websites["parent_link"] = df_websites["website"].apply(get_parent_link)
-df_websites = df_websites.drop_duplicates(subset=["parent_link"]).reset_index(drop=True)
+df_websites["Company Link"] = df_websites["website"].apply(get_parent_link)
+df_websites = df_websites.drop_duplicates(subset=["Company Link"]).reset_index(drop=True)
 
 print(f"🔗 Step 2 Complete: {len(df_websites)} parent links.\n")
 
@@ -211,7 +213,7 @@ def extract_text(url):
 
 
 print("📄 Step 3: Extracting homepage text...")
-df_websites["Extracted_Raw_Text"] = df_websites["parent_link"].apply(extract_text)
+df_websites["Extracted_Raw_Text"] = df_websites["Company Link"].apply(extract_text)
 print("✅ Step 3 Complete.\n")
 
 
@@ -220,16 +222,23 @@ print("✅ Step 3 Complete.\n")
 # ======================================================
 def normalize_company_name(name):
     if not isinstance(name, str):
-        return name
+        return ""
 
+    # Step 1 — Clean quotes & newlines
+    name = name.replace("\n", " ").replace("\"", " ").strip()
+
+    # Step 2 — Standard remove Pvt/Ltd variations
     name = name.replace("Pvt.", "Private").replace("pvt.", "Private")
     name = name.replace("Pvt", "Private").replace("pvt", "Private")
     name = name.replace("Ltd.", "Limited").replace("ltd.", "Limited")
     name = name.replace("Ltd", "Limited").replace("ltd", "Limited")
 
-    name = re.sub(r'[^A-Za-z0-9 ]+', ' ', name)
+    # Step 3 — Remove special characters
+    name = re.sub(r"[^A-Za-z0-9 ]+", " ", name)
     name = " ".join(name.split())
+
     return name.strip()
+
 
 
 
@@ -261,8 +270,8 @@ def extract_and_normalize_company_name(url, html_text):
     raw = extract_company_name(url, html_text)
     return normalize_company_name(raw)
 
-df_websites["Company_Name"] = df_websites.apply(
-    lambda r: extract_and_normalize_company_name(r["parent_link"], r["Extracted_Raw_Text"]),
+df_websites["Company Name"] = df_websites.apply(
+    lambda r: extract_and_normalize_company_name(r["Company Link"], r["Extracted_Raw_Text"]),
     axis=1
 )
 
@@ -305,7 +314,7 @@ def extract_company_profile(url):
     return ""
 
 print("🧾 Step 5: Extracting company profiles...")
-df_websites["Company_Profile"] = df_websites["parent_link"].apply(extract_company_profile)
+df_websites["Company_Profile"] = df_websites["Company Link"].apply(extract_company_profile)
 print("✅ Step 5 Complete.\n")
 
 
@@ -339,7 +348,7 @@ def classify_company(name, profile, industry):
 
 print("🧠 Step 6: Classifying relevancy...")
 df_websites["Relevancy"] = df_websites.apply(
-    lambda r: classify_company(r["Company_Name"], r["Company_Profile"], r["industry"]),
+    lambda r: classify_company(r["Company Name"], r["Company_Profile"], r["industry"]),
     axis=1
 )
 print("✅ Step 6 Complete.\n")
@@ -414,7 +423,7 @@ all_contacts = []
 
 df_contacts_input = df_websites[df_websites["Relevancy"] == "YES"]
 for _, row in tqdm(df_contacts_input.iterrows(), total=len(df_contacts_input), desc="Contacts"):
-    base = row["parent_link"]
+    base = row["Company Link"]
 
     phone_set, email_set = set(), set()
 
@@ -441,7 +450,7 @@ df_contacts = pd.DataFrame(all_contacts)
 df_final = pd.merge(
     df_websites,
     df_contacts,
-    left_on="parent_link",
+    left_on="Company Link",
     right_on="Website",
     how="left"
 )
@@ -460,8 +469,6 @@ print("📁 File saved: B2B_Lead_Full_Output.csv\n")
 df_relevant = df_final[df_final["Relevancy"] == "YES"].copy()
 
 df_relevant.rename(columns={
-    "Company_Name": "Company Name",
-    "parent_link": "Company Link",
     "Extracted_Raw_Text": "Extracted Text"
 }, inplace=True)
 
@@ -487,15 +494,6 @@ print("🚀 STARTING GSTIN / JAMKU PIPELINE")
 print("===============================================\n")
 
 
-
-# ======================================================
-# CHROME + SELENIUM INSTALLATION
-# ======================================================
-print("📦 Installing Chrome & Selenium dependencies...")
-os.system("apt-get update -qq")
-os.system("wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb")
-os.system("apt install -y ./google-chrome-stable_current_amd64.deb -qq")
-os.system("pip install -q selenium webdriver-manager pandas tqdm requests")
 
 
 # ======================================================
@@ -577,16 +575,25 @@ df["Serper Raw Response"] = [json.dumps(r, ensure_ascii=False) for r in serper_j
 # ======================================================
 # STEP 2 — GSTIN EXTRACTION
 # ======================================================
+# STEP 2 — GSTIN EXTRACTION
 df["GSTIN List"] = [
     extract_gstins_best(company, raw)
     for company, raw in zip(df["Company Name"], serper_jsons)
 ]
 
+# FIX: ensure list is never empty before explode
+df["GSTIN List"] = df["GSTIN List"].apply(
+    lambda x: x if isinstance(x, list) and len(x) > 0 else [""]
+)
+
+# Now safe to explode
 df = df.explode("GSTIN List").reset_index(drop=True)
 df.rename(columns={"GSTIN List": "GSTIN"}, inplace=True)
 
+# Clean GSTIN
 df["GSTIN"] = df["GSTIN"].fillna("").astype(str)
 df.loc[df["GSTIN"] == "nan", "GSTIN"] = ""
+
 
 df["PAN"] = df["GSTIN"].apply(get_pan_from_gstin)
 df = df.drop_duplicates(subset=["Company Name", "PAN"])
@@ -752,7 +759,7 @@ def check_name_match(company_name, trade_name):
     }}
     """
 
-url = "https://api.deepseek.com/v1/chat/completions"
+    url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
@@ -787,8 +794,13 @@ print("\n🤖 Running DeepSeek Name Matching...")
 results = []
 
 for _, row in tqdm(df_jamku.iterrows(), total=len(df_jamku)):
-    company = row["Company Name"]
-    trade = row["Trade Name"]
+    company = row.get("Company Name", "")
+
+    # SAFE extraction of Trade Name
+    trade = row.get("Trade Name", "")
+    if not isinstance(trade, str):
+        trade = ""
+    trade = trade.strip()
 
     match, reason, raw_json = check_name_match(company, trade)
 
@@ -797,6 +809,7 @@ for _, row in tqdm(df_jamku.iterrows(), total=len(df_jamku)):
     row["Name Match Raw JSON"] = raw_json
 
     results.append(row)
+
 
 
 # ======================================================
@@ -856,7 +869,7 @@ TEXT:
         raw = res.json()["choices"][0]["message"]["content"].strip().replace("\n", "")
 
         # Convert AI output → Python list
-        arr = eval(raw) if raw.startswith("[") else []
+        arr = ast.literal_eval(raw) if raw.startswith("[") else []
 
         # 🔥 LIMIT TO MAX 5 ADDRESSES
         return arr[:max_addresses]
@@ -873,7 +886,15 @@ df_addr["Raw Address Data"] = df_addr["Extracted Text"].fillna("").apply(extract
 # ------------------------------------------------------
 # STEP B — Expand into Address 1 / Address 2 / ...
 # ------------------------------------------------------
-max_count = min(5, max(len(a) for a in df_addr["Raw Address Data"]))
+# Get lengths only for valid lists
+lengths = [
+    len(a) for a in df_addr["Raw Address Data"]
+    if isinstance(a, list) and len(a) > 0
+]
+
+# Safe max_count
+max_count = min(5, max(lengths)) if lengths else 0
+
 print(f"📌 Maximum addresses detected: {max_count}")
 
 for i in range(max_count):
@@ -945,13 +966,27 @@ if "Company_Name" in df_jamku_final.columns:
     df_jamku_final.rename(columns={"Company_Name": "Company Name"}, inplace=True)
 
 # Address file already has "Company Name"
-df_addr.rename(columns={"Company Link": "parent_link"}, inplace=True)
+
+
 
 # ---------------------------
 # MERGES
 # ---------------------------
+
+# 🔥 Clean df_web to avoid duplicate/accidental merge collisions
+web_keep = [
+    "industry", "city", "search_query",
+    "title", "snippet",
+    "Company Link", "Company Name",
+    "Company_Profile", "Relevancy",
+    "Phone Numbers", "Email Addresses"
+]
+
+df_web = df_web[[c for c in web_keep if c in df_web.columns]]
+
+
 master_df = df_web.merge(df_jamku_final, on="Company Name", how="left")
-master_df = master_df.merge(df_addr, on=["Company Name", "parent_link"], how="left")
+master_df = master_df.merge(df_addr, on=["Company Name", "Company Link"], how="left")
 
 master_filename = "master_company_dataset.csv"
 master_df.to_csv(master_filename, index=False)
