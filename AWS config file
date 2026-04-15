@@ -25,3 +25,19 @@ Generate only the final comma-separated list of optimized search phrases.
 
 Cities:-
 Pune, Mumbai, Navi Mumbai, Thane, Bengaluru, Chennai, Hyderabad, Ahmedabad, Surat, Vadodara, Rajkot, Delhi, Noida, Gurgaon, Faridabad, Ghaziabad, Kolkata, Coimbatore, Jaipur, Indore, Maharashtra, Gujarat, Tamil Nadu, Karnataka, Telangana, Haryana, Rajasthan, Uttar Pradesh, Madhya Pradesh, West Bengal, Bhosari MIDC, Chakan MIDC, Talegaon MIDC, Ranjangaon MIDC, Peenya Industrial Area, Bommasandra Industrial Area, Ambattur Industrial Estate, Sriperumbudur, Oragadam, Sanand GIDC, Changodar Industrial Area, Vatva GIDC, Vapi GIDC, IMT Manesar, Bhiwadi RIICO, India
+
+
+Steps to run the code:-
+- Check Keys are updated in the config file
+- Update the industry in config file
+- upload config file in S3
+- Start the instance
+- source myenv/bin/activate
+- aws s3 cp s3://prospectingec2/config.env config.env
+- aws s3 cp s3://prospectingec2/script.py script.py
+- nohup python3 -u script.py > run.log 2>&1 &
+- tail -f run.log
+-ps aux | grep script.py
+- Download results
+- Slosee INstance.
+
